@@ -1,0 +1,131 @@
+#!/usr/bin/env sh
+function warning()
+{
+    printf "\n"
+    echo "WARNING:"
+    echo "  This will PERMANENTLY DESTROY an entire pool of objects with no way back."
+    echo "  To confirm, pass the pool to remove twice, followed by"
+    echo "  -c yes_i_really_really_mean_it"
+}
+
+function usage_help()
+{
+    printf "\n"
+    echo "Usage: icfs_remove_erasure_pool -p <ecpoolname> -t <ecpoolname> -c yes_i_really_really_mean_it"
+    echo "  -p <ecpoolname>                  remove pool <ecpoolname>"
+    echo "  -t <ecpoolname>                  remove pool <ecpoolname> twice"
+    echo "  -c yes_i_really_really_mean_it   To confirm, pass the pool to remove twice, followed"
+    echo "Help options:"
+    echo "  -h|? :Show this help message"
+}
+
+function help()
+{
+    warning
+    printf "\n"
+    echo "REMINDING:"
+    echo "  Before remove pool, confirm no operations on the pool or corresponded directory "
+    echo "                      and clean up the correspondences please."
+    usage_help
+}
+
+function reminding()
+{
+    echo "REMINDING again:"
+    echo "  Confirm no more operations on the pool [$1] or corresponded directory and clean up the correspondences."
+}
+
+function ecpool_exist()
+{
+    existec=`icfs osd dump|grep -w erasure|awk 'BEGIN{FS=" "} {print $3}' |grep -w $decpoolname`
+    if [ "$existec" == "" ] ; then
+        printf "The pool [$decpoolname] is not an erasure pool or not existed!\n"
+        exit 1
+    fi
+}
+
+good=0
+while getopts p:t:c:h option
+    do
+        case "$option" in
+        p)
+            type1="decpoolname"
+            decpoolname=$OPTARG
+            ecpool_exist
+            ;;
+        t)
+            type2="twiceecpoolname"
+            twiceecpoolname=$OPTARG
+            ;;
+        c)
+            type3="confirmparam"
+            confirmparam=$OPTARG
+            ;;
+        h|?)
+            help
+            exit 1
+            ;;
+        esac
+    done
+
+function check_used_or_not()
+{
+    data_bytes=1
+    tmp_bytes=`rados df | grep -w $decpoolname | awk '{print$3}'`
+    if [ $data_bytes -lt $tmp_bytes  ] ; then
+        printf "the decpoolname=$decpoolname is not empty, forbid delete ! \n"   
+	exit 1
+    fi
+}
+
+#ret: 0 not; 1 exits
+function check_fs_exist()
+{
+    #judge fs status
+    existfs=`icfs fs ls`
+    if [ "No filesystems enabled" = "$existfs" ] ; then
+        printf "Warning No filesystems enabled ! Please create fs ,and metadata pool size is $tmpsize !\n"
+        return 0;
+    else
+		return 1;
+    fi
+}
+
+#ret: 0 not; 1 exits
+function check_in_fs_or_not()
+{
+    #judge fs status
+    existinfs=`icfs fs ls | grep -w $decpoolname`
+    if [ "" = "$existinfs" ] ; then
+        return 0;
+    else
+		return 1;
+    fi
+}
+
+if [ "$type1" == "decpoolname" ] ; then
+    good=1
+    if [ "$type2" == "twiceecpoolname" ] && [ "$decpoolname" == "$twiceecpoolname" ] ; then
+        if [ "$type3" == "confirmparam" ] && [ "$confirmparam" == "yes_i_really_really_mean_it" ] ; then
+
+            check_used_or_not
+            icfs mds remove_data_pool $decpoolname  >/dev/null 2>&1
+            icfs osd pool delete $decpoolname $decpoolname --yes-i-really-really-mean-it  >/dev/null 2>&1
+        else
+            usage_help
+            exit 1
+        fi
+    elif [ "" == "$twiceecpoolname" ] ; then
+        usage_help
+    else
+        echo "WARNING:"
+        echo "  This will PERMANENTLY DESTROY an entire pool of objects with no way back."
+        echo "  To confirm, pass the pool to remove twice[$decpoolname != $twiceecpoolname]"
+        exit 1
+    fi
+fi
+
+if [ $good == 0 ] ; then
+    help
+    exit 1
+fi

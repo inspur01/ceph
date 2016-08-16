@@ -1,0 +1,182 @@
+#!/usr/bin/env sh
+
+#0:no 1:have
+function extend_op_judge()
+{
+	local_hostname=`hostname -s`
+    exist=`icfs osd tree | grep "$local_hostname"_n | wc -l`
+    if [ 1 -le $exist ] ; then
+        i=1
+        while [ $i -le $exist ]
+        do
+            host_array[$i]=`icfs osd tree | grep "$local_hostname"_n | awk "NR==$i" | awk '{print$2}'`
+            let i+=1
+        done
+    else
+        return 0;
+    fi
+  
+    i=1 
+    while [ $i -le $exist ]
+    do
+        if [ 0 == ${host_array[$i]} ] ; then
+            return 0;           
+        fi
+        let i+=1
+    done
+    
+    return 1;
+}
+
+threshold=1
+
+ssd_array=()
+ssd_weight=()
+
+osd_arryay=()
+weight_array=()
+
+function get_osd_array()
+{
+    osdnum=`mount | grep "/var/lib/icfs/osd" | wc -l`
+    i=1
+    j=1
+    while [ $i -le $osdnum ]
+    do
+        id=`mount | grep osd | awk '{print$3}' | awk 'BEGIN {FS="-"} {print$2}' | awk "NR==$i" | awk '{print$1}'`
+        bool=`echo ${mpool_array[*]} | grep -w osd.$id` 
+        if [ "" == "$bool" ] ; then
+          osd_array[$j]=$id
+          weight_array[$j]=`icfs osd tree | grep -w "osd.${osd_array[$j]}" | awk '{print$2}'`
+          let j+=1
+        fi
+        let i+=1
+    done
+}
+
+function ssd_sata_split()
+{
+    extend_op_judge
+    ret=$?
+    if [ 1 -eq $ret ] ; then
+		hostname_e=`hostname -s`
+		printf "[Warning] The n of $hostname_e have done !\n"
+        return;
+    fi  
+
+    #judge ssd or not
+    #split ssd sata     
+    j=1
+    index=1
+    while [ $index -le ${#osd_array[@]} ]
+    do
+        ret=`echo "${weight_array[$index]}>=$threshold" |bc`
+        
+        if [ $ret == 0 ] ; then
+            ssd_array[$j]=${osd_array[$index]}
+            ssd_weight[$j]=${weight_array[$index]}
+            let j+=1
+        fi
+        let index+=1    
+    done
+
+    hostname_get=`hostname -s`
+    hostnm="$hostname_get"_ssd
+    hostnm_cs="$hostname_get"_cs
+    hostnm_n1="$hostname_get"_n1
+    
+    #K+n:1 coexist 
+    icfs osd crush add-bucket $hostnm_cs chassis >/dev/null 2>&1
+    icfs osd crush move $hostnm_cs root=default >/dev/null 2>&1
+    icfs osd crush move $hostname_get chassis=$hostnm_cs >/dev/null 2>&1
+
+    if [ 0 -lt ${#ssd_array[@]} ] ; then
+        icfs osd crush add-bucket $hostnm host >/dev/null 2>&1
+        icfs osd crush link $hostnm root=default >/dev/null 2>&1
+        i=1 
+        while [ $i -le ${#ssd_array[@]} ] 
+        do
+            icfs osd crush create-or-move osd.${ssd_array[$i]} ${ssd_weight[$i]} host=$hostnm >/dev/null 2>&1
+            let i+=1
+        done
+        #K+n:1 coexist
+        icfs osd crush move $hostnm_n1 chassis=$hostnm_cs >/dev/null 2>&1
+    fi
+
+}
+
+function split_sata_to_m()
+{
+    extend_op_judge
+    ret=$?
+    if [ 1 -eq $ret ] ; then
+		    hostname_e=`hostname -s`
+		    printf "[Warning] The n of $hostname_e have done !\n"
+        return;
+    fi  
+    
+    hostname_get=`hostname -s`
+    hostnm="$hostname_get"_n
+    hostnm_cs="$hostname_get"_cs
+
+    let osdnum=${#osd_array[@]}
+    let per_array_num=${osdnum}/$m_value
+
+    remainder=`echo "$osdnum"%"$m_value" | bc`
+    if [ 0 -ne $remainder ] ; then
+      let per_array_start=$per_array_num
+    else
+      let per_array_start=$per_array_num+1
+    fi
+    
+    #K+n:1 coexist 
+    icfs osd crush add-bucket $hostnm_cs chassis >/dev/null 2>&1
+    icfs osd crush move $hostnm_cs root=default >/dev/null 2>&1
+    icfs osd crush move $hostname_get chassis=$hostnm_cs >/dev/null 2>&1
+
+    i=1
+    while [ $i -lt $m_value ] 
+    do
+        icfs osd crush add-bucket $hostnm$i host >/dev/null 2>&1
+        icfs osd crush link $hostnm$i root=default >/dev/null 2>&1
+        j=$per_array_start
+        let per_array_start+=$per_array_num
+
+        while [ $j -lt $per_array_start ] 
+        do
+            icfs osd crush create-or-move osd.${osd_array[$j]} ${weight_array[$j]} host=$hostnm$i >/dev/null 2>&1
+            let j+=1
+        done
+        
+        #K+n:1 coexist
+        icfs osd crush move $hostnm$i chassis=$hostnm_cs >/dev/null 2>&1
+        
+        let i+=1
+    done
+    
+}
+
+if [ $# -lt 1 ] ; then
+	osdnum=`mount | grep "/var/lib/icfs/osd" | wc -l`
+	exit $osdnum
+fi
+
+m_value=$1
+sdsa_enable=$2
+mpool_array=()
+args_array=("$@")
+
+i=3
+while [ $i -le $# ]
+do
+  mpool_array[$i-3]=${args_array[$i-1]}
+  let i+=1
+done
+
+if [ $sdsa_enable -eq 1 ] ; then
+    get_osd_array
+    ssd_sata_split
+else
+    get_osd_array
+    split_sata_to_m
+fi

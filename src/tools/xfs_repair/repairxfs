@@ -1,0 +1,97 @@
+#!/bin/bash
+#chkconfig:2345 30 91
+#description:repairxfs......
+
+#服务启动需要做的步骤
+start()
+{
+    #1、读取mounts文件
+    myFile=/etc/icfs/mounts
+    if [ ! -e "$myFile" ]; then
+        echo $(date) "/etc/icfs/mounts does not exit! please check!" >> /var/log/xfs-repair.log
+		    #mounts文件不存在，repairxfs服务创建失败
+        exit 0
+    fi
+	
+    #2、文件存在标志非异常掉电，删除文件
+    shutDownFile=/etc/icfs/normalShutDownOk
+    if [ -f "$shutDownFile" ]; then
+        echo $(date) $shutDownFile "exit." >> /var/log/xfs-repair.log
+        rm -rf $shutDownFile  #删除，正常关机将产生该文件
+        touch /var/lock/subsys/repairxfs
+        exit 0
+    fi
+
+    touch /var/lock/subsys/repairxfs
+    
+    
+    #3、获取xfs文件系统的分区，并检查是否需要修复
+    xfs_checkResult=1
+    grep '\<osd\>' $myFile | awk -F " " '{print $1 " " $2}' | while read dev osd
+    do
+    {
+        echo $(date) "Starting mount on"$dev >> /var/log/xfs-repair.log
+        #挂载分区    
+        mount -t xfs $dev $osd
+	      echo $(date) "Starting umount on"$dev >> /var/log/xfs-repair.log
+        #卸载分区
+	      umount $dev
+
+	      echo $(date) "Starting check_xfs on"$dev >> /var/log/xfs-repair.log   
+        #检查xfs文件系统
+	      xfs_check $dev
+	      xfs_checkResult=$?
+	      echo "the first xfs_checkResult("$dev"):"$xfs_checkResult
+
+	      if [ $xfs_checkResult != 0 ]; then
+            #!=0表示需要修复xfs文件系统
+	          echo $(date) "Starting xfs_check_repair on" $dev >> /var/log/xfs-repair.log
+	          xfs_repair $dev >/dev/null 2>&1
+
+            #检查修复结果，并输出xfs文件系统是否修复成功
+            xfs_check $dev
+            xfs_checkResult=$?
+            echo "after repair xfs_checkResult("$dev"):"$xfs_checkResult
+            if [ $xfs_checkResult != 0 ]; then
+                echo $(date) "xfs_reapir "$dev" failed." >> /var/log/xfs-repair.log
+            else
+                echo $(date) "xfs_reapir "$dev" success." >> /var/log/xfs-repair.log
+            fi
+        else
+            echo $(date) "xfs "$dev" OK." >> /var/log/xfs-repair.log
+        fi
+
+        xfs_checkResult=1 
+    }&
+    done
+
+    wait
+    exit 0        
+}
+
+#服务停止需要做的步骤
+stop()
+{
+    mkdir -p /etc/icfs
+    touch /etc/icfs/normalShutDownOk
+
+	  #判断日志文件大小，大于10M，清空该日志文件
+	  if [ `ls -l /var/log/xfs-repair.log | awk '{print $5}'` -gt $((10*1024*1024)) ];then
+	  echo > /var/log/xfs-repair.log
+    fi
+
+    rm -rf /var/lock/subsys/repairxfs
+}
+
+case "$1" in
+    'start')
+	start
+        ;;
+    'stop')
+        stop
+        ;;
+         *)
+        echo "usage: $0 {start|stop|restart|status}"
+        exit 1
+        ;;
+esac

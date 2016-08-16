@@ -1,0 +1,49 @@
+#!/usr/bin/env sh
+
+function help()
+{
+    echo "Usage: icfs_create_replicated_pool <poolname> <pgnumber>"
+    echo "Waring: Not Support ,the kind of K+n:1 rule noexistent"
+    echo "Help options:"
+    echo "  -h|? :Show this help message"
+}
+
+function pool_exist()
+{
+    pool=$1
+    #echo "pool = $pool"
+    #`rados lspools | grep -w $pool`
+    existec=`icfs osd dump|awk 'BEGIN{FS=" "} {print $3}' |grep \'$pool\'`
+    if [ "$existec" == "'$pool'" ] ; then
+        printf "The pool [$pool] exists already!\n"
+        exit 1
+    fi
+}
+
+function chassis_exist()
+{
+  icfs osd tree | grep -w chassis >/dev/null 2>&1
+  exist=$?
+  if [ $exist -ne 0 ] ; then
+    echo "Error: Not Support ,the kind of K+n:1 rule noexistent"
+    exit 1
+  fi
+}
+
+if [ $# -lt 2 ] || [ "$1" == "-h" ] || [ "$1" == "?" ] || [ "$1" == "-?" ] || [ "$1" == "--help" ] ; then
+  help
+  exit 1
+fi
+
+chassis_exist
+rule_name=replicated_coexist_rule
+
+icfs osd pool create $1 $2
+if [ $? -ne 0 ] ; then
+  exit -1
+fi
+icfs osd crush rule create-simple $rule_name default chassis firstn >/dev/null 2>&1
+
+rule_set=`icfs osd crush rule dump $rule_name | grep -w ruleset | awk 'BEGIN {FS=" "} {print$2}' | awk 'BEGIN {FS=","} {print$1}'`
+icfs osd pool set $1 crush_ruleset $rule_set >/dev/null 2>&1
+

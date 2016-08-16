@@ -1,0 +1,38 @@
+#!/bin/sh
+
+usage()
+{
+  echo "Usage: ceph-dir-mds <path>"
+  echo ""
+  echo "       --<path>      already exist. the path began to write from the mounted file system root "
+  echo ""
+  echo "For example:"
+  echo "              ceph-dir-mds a"
+}
+
+if [ $# -ne 1 ]; then
+  usage
+  exit 0
+fi
+echo -n "Querying ..."
+sleep 4
+echo -n " ..."
+mkdir /mnt/inspur01233210 >/dev/null 2>&1
+ceph-fuse -c /etc/ceph/ceph.conf /mnt/inspur01233210 >/dev/null 2>&1
+cd /mnt/inspur01233210
+if [ ! -d $1 ]; then
+  echo ""
+  echo "ERROR: The parameter is not a path."
+  cd /root
+  umount /mnt/inspur01233210 >/dev/null 2>&1
+  rm -rf /mnt/inspur01233210
+  exit 0
+fi
+cd /mnt/inspur01233210/$1
+touch .inspur
+cd /root
+echo ""
+ceph daemon client.admin calc_mds $1
+rm -rf /mnt/inspur01233210/$1/.inspur
+umount /mnt/inspur01233210 >/dev/null 2>&1
+rm -rf /mnt/inspur01233210

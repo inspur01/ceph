@@ -1,0 +1,83 @@
+#!/usr/bin/env sh
+function help()
+{
+  echo "Usage: icfs_remove_diskpool_rule <hostname> [<hostname>...]"
+  echo "Help options:"
+  echo "  -h|? :Show this help message"
+}
+
+if [ "$1" == "-h" ] || [ "$1" == "?" ] || [ "$1" == "-?" ] || [ "$1" == "--help" ] || [ "$#" == 0 ] ; then
+  help
+  exit 1
+fi
+
+osd_arryay=()
+weight_array=()
+
+function remove_dpool_rule()
+{
+    osdnum=`ssh $arg "mount | grep "/var/lib/icfs/osd" | wc -l"`
+    i=1
+    j=1
+
+    while [ $i -le $osdnum ]
+    do
+        id=`ssh $arg mount | grep osd | awk '{print$3}' | awk 'BEGIN {FS="-"} {print$2}' | awk "NR==$i" | awk '{print$1}'`
+        bool=`echo ${mpool_array[*]} | grep -w osd.$id` 
+
+        if [ "" == "$bool" ] ; then
+            osd_host=`icfs osd find $id | grep -w host | awk  -F '"'  '{print $4}'`
+            if [ "$osd_host" = "$rule_hostname" ]; then
+
+             osd_array[$j]=osd.$id
+             weight_array[$j]=`icfs osd tree | grep -w "${osd_array[$j]}" | awk '{print$2}'`
+             icfs osd crush create-or-move ${osd_array[$j]} ${weight_array[$j]} host=$arg >/dev/null 2>&1 
+             let j+=1
+
+            fi
+        fi
+      let i+=1
+    done 
+  
+  # check the weight of rule_hostname
+  weight=`icfs osd tree | grep -w "$rule_hostname" | awk '{print$2}'`
+  weight=`echo "$weight 10000" | awk '{print $1*$2}'`
+  if [ "$weight" -eq "0" ]; then
+    icfs osd crush remove $rule_hostname >/dev/null 2>&1
+  fi
+  if [ "$?" -eq "0" ]; then
+    printf "The rule of $rule_hostname is removed !\n"
+  fi
+
+  hostname_cs="$arg"_cs
+  icfs osd crush move $arg root=default >/dev/null 2>&1
+  icfs osd crush remove $hostname_cs >/dev/null 2>&1
+}
+
+#check input host is exsit?
+host_num=$#
+host_array=("$@")    
+for arg in ${host_array[@]}
+do
+   exist=`cat /etc/hosts | awk '{print$2}' |grep -w "$arg" `
+   if [ -z $exist ] ; then
+      printf "[Error] hostname $arg is not resolvable !\n\n"
+      help
+      exit 1
+   fi
+done
+
+#rule_hostname=0
+for arg in ${host_array[@]}
+do
+   rule_hostname=`icfs osd tree | grep "$arg\_n" |awk '{print$4}'`
+   #exist=`cat /etc/hosts | grep -w "$arg" | awk '{print$2}'`
+   if [ -z $rule_hostname ] ; then
+      printf "[Warn] in hostname $arg, the rule of K+2:1 is not exist !\n"
+   else
+      remove_dpool_rule     
+      #remove_rule
+   fi
+done
+
+

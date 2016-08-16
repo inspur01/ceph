@@ -1,0 +1,180 @@
+#!/bin/bash
+function help()
+{
+    echo "Usage: icfs_create_tier_erasure -p <ecpoolname> -k <datanumber> -m <codenumber> [-g <pgnumber1>] [-l <pgnumber2>] -j <cachemode> [-r <rulesetfailuredomain>]"
+    echo "  -p <ecpoolname>              name of the erasure code pool to create"
+    echo "  -k <datanumber>              number of data chunks"
+    echo "                               is integer and between 2 and 8"
+    echo "  -m <codenumber>              number of coding chunks"
+    echo "                               is integer and between 1 and 3"
+    echo "  -g <pgnumber1>                number of pgs for cachepool"
+    echo "  -l <pgnumber2>                number of pgs for erasurepool"
+
+    echo "                               is integer and between 64 and 65536"
+    echo "  -j <cachemode>               is a cachemode with writeback or readonly"
+    echo "  -r <rulesetfailuredomain>    default host"
+    echo "                               type of crush bucket"
+    echo "Help options:"
+    echo "  -h|? :Show this help message"
+}
+
+function pool_exist()
+{
+    pool=$1
+    #echo "pool = $pool"
+    existec=`icfs osd dump|awk 'BEGIN{FS=" "} {print $3}' |grep \'$pool\'`
+    if [ "$existec" == "'$pool'" ] ; then
+        printf "The pool [$pool] exists already!\n"
+        exit 1
+    fi
+}
+
+good=0
+while getopts p:k:m:g:l:j:r:h option
+    do
+        case "$option" in
+        p)
+            type1="cachepoolname"
+            cachepoolname=$OPTARG
+            pool_exist $cachepoolname
+            basepoolname=base${cachepoolname}
+            pool_exist $basepoolname
+            ;;
+        k)	
+            type2="datanumber"
+            datanumber=$OPTARG			
+            ;;
+        m)	
+            type3="codenumber"
+            codenumber=$OPTARG			
+            ;;
+        g)	
+            type4="pgnumber1"
+            pgnumber1=$OPTARG			
+            ;;
+        l)
+            type5="pgnumber2"
+            pgnumber2=$OPTARG
+            ;;
+
+        j)  
+            type6="cachemode"
+            cachemode=$OPTARG
+            ;;
+        r)
+            type7="failuredomain"
+            failuredomain_in=$OPTARG
+            ;;
+        h|?)
+            help
+            exit 1
+            ;;
+        esac
+    done
+
+function erasure_code_profile_exist()
+{
+    i=1
+    condition=0
+    profile=ecprofile
+    while [ "$condition" == "0" ]
+        do
+            exist=`icfs osd erasure-code-profile ls|awk 'BEGIN{FS=" "} {print $1}' |grep $profile`
+            if [ "" != "$exist" ] ; then
+                condition=0
+                let i+=1
+                profile=ecprofile${i}
+            else
+                condition=1
+            fi
+        done
+}
+
+function erasure_ruleset_failure_domain()
+{
+    if [ "" != "$failuredomain_in" ] ; then
+        type=(osd host chassis rack row pdu pod room datacenter region root)
+        if echo "${type[@]}" | grep -w $failuredomain_in &>/dev/null; then
+            failuredomain=$failuredomain_in
+        else
+            printf "[ruleset-failure-domain = $failuredomain_in] is invalid!\n"
+            exit 1
+        fi
+    else
+        failuredomain=host
+    fi
+}
+a=` icfs osd dump |grep tier_of |grep cache_mode |wc -l `
+if [ $a -ge 0 -a $a -lt 3 ]; then
+ if [ "$type1" == "cachepoolname" ] && [ "$type2"=="datanumber" ] && [ "$type3" ==  "codenumber" ] ; then
+    good=1
+    if [ 1 -lt $datanumber -a 9 -gt $datanumber -a 0 -lt $codenumber -a 4 -gt $codenumber ] ; then 
+        if [ "$type4" == "pgnumber1" ] && [ "$type5" == "pgnumber2" ] && [ -n "$pgnumber1" ] && [ -n "$pgnumber2" ] && [ "$type6" == "cachemode" ] ; then
+            pgs1=$pgnumber1
+            pgs2=$pgnumber2
+            if [ $cachemode == writeback -o $cachemode == readonly ] ; then
+                  if (( [ 65536 -lt $pgs1 ] || [ 64 -gt $pgs1 ] ) && ( [ 65536 -lt $pgs2 ] || [ 64 -gt $pgs2 ] )); then
+                        printf "[pgnu1 = $pgs1] or [pgnu2 = $pgs2]  is invalid!\n"
+                        help
+                        exit 1
+                  else 
+                        let pgs_cache=$pgs1
+                        let pgs_ec=$pgs2
+                  fi
+            else
+                printf "$cachemode is invalid mode!\n"
+            fi
+        else
+           printf " pgs is not correctly!\n"
+        fi
+
+        erasure_code_profile_exist
+        erasure_ruleset_failure_domain
+        #echo "failuredomain = $failuredomain"
+
+        icfs osd pool create $cachepoolname $pgs_cache $pgs_cache  2> /tmp/b
+        a=`cat /tmp/b`
+        #echo "${a}"
+        if [ "${a}" == "Error EINVAL: (22) Invalid argument" ] ; then
+            echo "${a}"
+            exit 1
+        fi
+        
+        #icfs mds add_data_pool $cachepoolname  >/dev/null 2>&1
+        let size=$codenumber+1
+        icfs osd pool set $cachepoolname size $size >/dev/null 2>&1
+ 
+        icfs osd erasure-code-profile set $profile k=$datanumber m=$codenumber ruleset-failure-domain=$failuredomain
+        icfs osd pool create $basepoolname $pgs_ec $pgs_ec erasure $profile  >/dev/null 2>&1
+        #icfs mds add_data_pool $basepoolname  >/dev/null 2>&1
+        
+        icfs osd tier add $basepoolname $cachepoolname   >/dev/null 2>&1
+        icfs osd tier cache-mode $cachepoolname $cachemode  >/dev/null 2>&1
+        icfs osd tier set-overlay $basepoolname $cachepoolname  >/dev/null 2>&1
+        
+        icfs osd pool set $cachepoolname hit_set_count 2  >/dev/null 2>&1
+        icfs osd pool set $cachepoolname hit_set_type bloom  >/dev/null 2>&1
+        icfs osd pool set $cachepoolname hit_set_period 1200  >/dev/null 2>&1
+        icfs osd pool set $cachepoolname target_max_bytes 2000000000000  >/dev/null 2>&1
+        #icfs osd pool set $cachepoolname target_max_objects 300000  >/dev/null 2>&1
+        
+        icfs osd pool set $cachepoolname cache_target_dirty_ratio 0.4  >/dev/null 2>&1
+        icfs osd pool set $cachepoolname cache_target_full_ratio 0.8  >/dev/null 2>&1
+        icfs osd pool set $cachepoolname cache_min_flush_age 60  >/dev/null 2>&1
+        icfs osd pool set $cachepoolname cache_min_evict_age 1800  >/dev/null 2>&1
+        
+    else
+        printf "[k = $datanumber] or [m = $codenumber] is invalid!\n"
+        help
+        exit 1
+    fi
+ fi
+
+else
+    printf "Error! can't set the tier,the tier number is limited between 1 to 3.\n\n"
+fi
+
+if [ $good == 0 ] ; then
+        help
+	exit 1
+fi

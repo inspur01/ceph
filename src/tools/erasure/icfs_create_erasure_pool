@@ -1,0 +1,250 @@
+#!/usr/bin/env sh
+
+function help()
+{
+    echo "Usage: icfs_create_erasure_pool -p <decpoolname> -k <datanumber> -m <codenumber> [-g <pgnumber>] [-r <rulesetfailuredomain>]"
+    echo "  -p <decpoolname>             name of the erasure code pool to create"
+    echo "  -k <datanumber>              number of data chunks"
+    echo "                               is integer and between 2 and 16 , m <= k"
+    echo "  -m <codenumber>              number of coding chunks"
+    echo "                               is integer and between 1 and 4 , m <= k"
+    echo "  -g <pgnumber>                number of pgs"
+    echo "                               is integer and between 64 and 65536"
+    echo "  -r <rulesetfailuredomain>    default host"
+    echo "                               type of crush bucket"
+    echo "Help options:"
+    echo "  -h|? :Show this help message"
+}
+
+function pool_exist()
+{
+    pool=$1
+    #echo "pool = $pool"
+    #`rados lspools | grep -w $pool`
+    existec=`icfs osd dump|awk 'BEGIN{FS=" "} {print $3}' |grep \'$pool\'`
+    if [ "$existec" == "'$pool'" ] ; then
+        printf "The pool [$pool] exists already!\n"
+        exit 1
+    fi
+}
+
+good=0
+while getopts p:k:m:g:r:h option
+    do
+        case "$option" in
+        p)
+            type1="decpoolname"
+            decpoolname=$OPTARG
+            pool_exist $decpoolname
+            ;;
+        k)	
+            type2="datanumber"
+            datanumber=$OPTARG			
+            ;;
+        m)	
+            type3="codenumber"
+            codenumber=$OPTARG			
+            ;;
+        g)	
+            type5="pgnumber"
+            pgnumber=$OPTARG			
+            ;;
+        r)
+            type6="failuredomain"
+            failuredomain_in=$OPTARG
+            ;;
+        h|?)
+            help
+            exit 1
+            ;;
+        esac
+    done
+
+function pg_num()
+{
+    x=2
+    while [ $x -lt $1 ]
+        do
+            let x=2*${x}
+        done
+    let high=$x
+    let low=${high}/2
+    
+    let diff_low=$1-$low
+    let diff_high=$high-$1
+    if [ $diff_low -lt $diff_high ] ; then
+        let result=$low
+    else
+        let result=$high
+    fi
+}
+
+function erasure_code_profile_exist()
+{
+    i=1
+    condition=0
+    profile=ecprofile
+    while [ "$condition" == "0" ]
+        do
+            exist=`icfs osd erasure-code-profile ls|awk 'BEGIN{FS=" "} {print $1}' |grep $profile`
+            if [ "" != "$exist" ] ; then
+                condition=0
+                let i+=1
+                profile=ecprofile${i}
+            else
+                condition=1
+            fi
+        done
+}
+
+function erasure_ruleset_failure_domain()
+{
+    if [ "" != "$failuredomain_in" ] ; then
+        type=(osd host chassis rack row pdu pod room datacenter region root)
+        if echo "${type[@]}" | grep -w $failuredomain_in &>/dev/null; then
+            failuredomain=$failuredomain_in
+        else
+            printf "[ruleset-failure-domain = $failuredomain_in] is invalid!\n"
+            exit 1
+        fi
+    else
+        failuredomain=host
+    fi
+}
+
+#0:no 1:have
+function extend_op_judge()
+{
+	local_hostname=`hostname -s`
+    exist=`icfs osd tree | grep $local_hostname | wc -l`
+    if [ 1 -lt $exist ] ; then
+        i=1
+        while [ $i -le $exist ]
+        do
+            host_array[$i]=`icfs osd tree | grep $local_hostname | awk "NR==$i" | awk '{print$2}'`
+            let i+=1
+        done
+    else
+        return 0;
+    fi
+  
+    i=1 
+    while [ $i -le $exist ]
+    do
+        if [ 0 == ${host_array[$i]} ] ; then
+            return 0;           
+        fi
+        let i+=1
+    done
+    
+	return 1;
+}
+
+osd_array=()
+weight_array=()
+function bucket_rule_extend_op()
+{
+    extend_op_judge
+    ret=$?
+    if [ 1 -eq $ret ] ; then
+		printf "[Warning] The n have done !\n"
+        return;
+    fi  
+
+    hostnm=`hostname`_n
+    osdnum=`mount | grep "/var/lib/icfs/osd" | wc -l`
+    i=1
+    while [ $i -le $osdnum ]
+    do
+        osd_array[$i]=`mount | grep osd | awk '{print$3}' | awk 'BEGIN {FS="-"} {print$2}' | awk "NR==$i" | awk '{print$1}'`
+		    weight_array[$i]=`icfs osd tree | grep -w "osd.${osd_array[$i]}" | awk '{print$2}'`
+        let i+=1
+    done
+   
+    let i=$i/2+1    
+    icfs osd crush add-bucket $hostnm host >/dev/null 2>&1
+    icfs osd crush link $hostnm root=default >/dev/null 2>&1
+    
+    while [ $i -le $osdnum ]
+    do
+        icfs osd crush create-or-move osd.${osd_array[$i]} ${weight_array[$i]} host=$hostnm >/dev/null 2>&1
+        let i+=1
+    done
+}
+
+function manager_metadata_pool()
+{
+    let tmpsize=$codenumber+1
+   
+    #judge fs status
+    existfs=`icfs fs ls`
+    if [ "No filesystems enabled" = "$existfs" ] ; then
+		    printf "[Warning] No filesystems enabled ! Please create fs ,and metadata pool size is $tmpsize !\n"
+        return;
+    fi
+ 
+    exist=`icfs fs ls | awk 'BEGIN {FS= ","} {print$2}' | awk '{print$3}'`
+    if [ "" != "$exist" ] ; then
+        metadatapoolname=$exist
+    else
+		metadatapoolname=""
+    fi
+    
+    if [ "" != "$metadatapoolname" ] ; then
+		    metasize=`icfs osd pool get $metadatapoolname size | awk '{print$2}'`
+		if [ $metasize -lt $tmpsize ] ;then
+	    	icfs osd pool set $metadatapoolname size $tmpsize >/dev/null 2>&1 
+		fi         
+    fi
+} 
+
+if [ "$type1" == "decpoolname" ] && [ "$type2"=="datanumber" ] && [ "$type3" ==  "codenumber" ] ; then
+    good=1
+    if [ 1 -lt $datanumber -a 17 -gt $datanumber -a 0 -lt $codenumber -a 5 -gt $codenumber ] && [ $datanumber -ge $codenumber ] ; then 
+        if [ "$type5" == "pgnumber" ] && [ -n "$pgnumber" ] ; then
+            pgs=$pgnumber
+            if [ 65536 -lt $pgs ] || [ 64 -gt $pgs ] ; then
+                printf "[pgnu = $pgs] is invalid!\n"
+                help
+                exit 1
+            else 
+                let pgs_ec=$pgs
+            fi
+        else
+            #let pgs=512
+            osd=`icfs -s | grep osdmap | awk 'BEGIN{FS=" "} {print $3}'`
+            #echo "osd = $osd"
+
+            let rep=${datanumber}+${codenumber}
+            #echo "rep = $rep"
+            let pg_ec=${osd}*100/${rep}
+            #echo "pg_ec = $pg_ec"
+            pg_num $pg_ec
+            let pgs_ec=$result
+        fi
+		
+        erasure_code_profile_exist
+        erasure_ruleset_failure_domain
+        #echo "failuredomain = $failuredomain"
+       
+		    #create metadata or not
+ 
+        #icfs mds add_data_pool $decpoolname  >/dev/null 2>&1
+        #icfs osd pool set $metadatapoolname size $size >/dev/null 2>&1
+ 
+        icfs osd erasure-code-profile set $profile plugin=isa technique=reed_sol_van k=$datanumber m=$codenumber ruleset-failure-domain=$failuredomain
+        icfs osd pool create $decpoolname $pgs_ec $pgs_ec erasure $profile  >/dev/null 2>&1
+        #icfs mds add_data_pool $decpoolname  >/dev/null 2>&1
+        
+		    manager_metadata_pool
+    else
+        printf "[k = $datanumber] or [m = $codenumber] is invalid!\n"
+        help
+        exit 1
+    fi
+fi
+
+if [ $good == 0 ] ; then
+        help
+	exit 1
+fi

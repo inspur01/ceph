@@ -1,0 +1,23 @@
+该文件添加sqlite3数据库保存功能：
+1、数据库名称：.AclDataBase.db
+1、数据库路径：/etc/icfs/
+2、table name: acl
+
+增加命令：
+1、setxacl -D 清空acl表
+2、getxacl -L 打印acl表
+
+说明：只有setxacl -R -m递归命令会保存
+
+编译前先用当前目录下的replace_getfacl.sh和replace_setfacl.sh脚本替换关键字。
+
+编译：
+当前路径下：
+chmod 777 ./configure
+./configure
+make
+
+生成执行脚本
+./setxacl/setxacl
+./getxacl/getxacl
+

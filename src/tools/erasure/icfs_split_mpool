@@ -1,0 +1,87 @@
+#!/usr/bin/env sh
+function help()
+{
+  echo "Usage: icfs_create_split_mpool <osd-name> [<osd-name>...]"
+  echo "Help options:"
+  echo "  <osd-name>                   [<osd-name>...] the id of osd that belong to mpool"
+  echo "  -h|? :Show this help message"
+}
+
+if [ "$1" == "-h" ] || [ "$1" == "?" ] || [ "$1" == "-?" ] || [ "$1" == "--help" ] || [ "$#" == 0 ] ; then
+  help
+  exit 1
+fi
+
+osd_num=$#
+osd_array=("$@")    
+
+for arg in ${osd_array[*]}
+do
+osd_str=${arg:0:4}
+if [ "$osd_str" != "osd." ]; then
+    printf "[Error] osd.id: $arg is not invalid !\n\n"
+    help
+    exit 1
+else
+  exist=`icfs osd tree|grep -w $arg|awk '{print $3}'`
+  if [ -z $exist ] ; then
+    printf "[Error] osd.id: $arg is not invalid !\n\n"
+    help
+    exit 1
+  fi
+fi
+done
+
+touch /tmp/`icfs fsid`
+old_c=`cat /tmp/\`icfs fsid\``
+echo $old_c ${osd_array[*]} > /tmp/`icfs fsid`
+
+icfs osd crush add-bucket mpool_root root  >/dev/null 2>&1
+#icfs osd crush add-bucket mpool_host host  >/dev/null 2>&1
+#icfs osd crush link mpool_host root=mpool_root  >/dev/null 2>&1
+
+for arg in ${osd_array[*]}
+do
+  tnum=${arg:4}
+  osd_srchost=$(icfs osd find $tnum|awk  -F '"'  '{print $6}'|awk '/./') #osd's source hostname
+  tmp=${osd_srchost:0-3}  # judge _mp
+  if [ "$tmp" != "_mp" ]; then
+    osd_deshost=$osd_srchost\_mp
+    icfs osd crush add-bucket $osd_deshost host  >/dev/null 2>&1
+    icfs osd crush link $osd_deshost root=mpool_root  >/dev/null 2>&1
+
+    weight_osd=`icfs osd tree | grep -w $arg | awk '{print $2}'`
+    icfs osd crush create-or-move $arg $weight_osd host=$osd_deshost >/dev/null 2>&1 
+    
+#if mp is exsit,move the host_mp's osd to host
+:<<_removemp_
+  else
+    str_num=${#osd_srchost}
+    let str_num=$str_num-3
+    osd_deshost=${osd_srchost:0:8}
+    echo $osd_deshost
+  icfs osd crush create-or-move $arg 1 host=$osd_deshost root=root >/dev/null 2>&1 
+  fi
+  weight=$(icfs osd tree | grep -w "$osd_srchost" | awk '{print$2}')
+  weight=$(echo "$weight 10000" | awk '{print $1*$2}')
+    #let weight=$weight*10 
+    #var= 'expr $weight \* 10'
+    #echo $var
+  if [ "$weight" -eq "0" ]; then
+       icfs osd crush remove $osd_srchost
+  fi
+_removemp_
+
+fi
+
+done
+
+#icfs osd crush rule create-simple mpool_rule mpool_root osd firstn  >/dev/null 2>&1
+icfs osd crush rule create-simple mpool_rule mpool_root host firstn  >/dev/null 2>&1
+
+rule_id=`icfs osd crush dump | awk '/mpool_rule/{print a;}{a=$0}' | awk 'BEGIN{FS=" "} {print $3}' | awk 'BEGIN{FS=","} {print $1}'`
+
+#mpool_name=`icfs fs ls | awk 'BEGIN {FS= ","} {print$2}' | awk '{print$3}'`
+mpool_name=`icfs osd dump | grep replicated | grep -v rbd | awk -F "'" '{print $2}'`
+icfs osd pool set $mpool_name crush_ruleset $rule_id  >/dev/null 2>&1
+

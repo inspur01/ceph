@@ -1,0 +1,62 @@
+#!/bin/bash
+function help()
+{
+    echo "Usage: icfs_tier_add -b <basepool> -c <cachepool2> -d <cachemode>"
+    echo "  -b <basepool>  name of the base pool"
+    echo "  -c <cachepool>  name of the cache pool"
+    echo "  -d <cachemode> mode of the tier"
+    echo "Help options:"
+    echo "  -h|? :Show this help message"
+}
+
+good=0
+#add d
+#a='icfs osd dump |grep tier | wc -l '
+#if [ $a/2 -ge 1 -a $a/2 -le 3 ]     
+while getopts b:c:d:h option
+do
+	case "$option" in
+	b)	
+			type1="basepool"
+            basepool=$OPTARG			
+			;;		
+        c)	
+			type2="cachepool"
+            cachepool=$OPTARG			
+			;;
+        d)
+                        type3="cachemode"
+            cachemode=$OPTARG
+                        ;;					
+		h|?)
+			help
+			exit 1
+			;;
+	esac
+done
+a=`icfs osd dump |grep tier_of |grep cache_mode |wc -l `
+if [ $a -ge 0 -a $a -lt 3 ]; then 
+ if [ "$type1" == "basepool" ] && [ "$type2" == "cachepool" ] && [ "$type3" == "cachemode" ]; then
+        good=1
+        base=`icfs osd dump|awk 'BEGIN{FS=" "} {print $3}' |grep \'$basepool\'`
+        cache=`icfs osd dump|awk 'BEGIN{FS=" "} {print $3}' |grep \'$cachepool\'`
+        if [ "" != "$base" ]  &&  [ "" != "$cache" ]  &&  [ $cachemode == writeback -o $cachemode == readonly ] ; then
+                icfs osd tier add $basepool $cachepool
+                icfs osd tier cache-mode $cachepool $cachemode  >/dev/null 2>&1
+                icfs osd tier set-overlay $basepool $cachepool  
+                icfs mds add_data_pool $basepool >/dev/null 2>&1
+        else
+                printf "Pool $basepool or $cachepool or doesn't exist,or $cachemode is not right mode Please create or make it to continue.\n\n"
+                help
+                exit 1
+       fi
+ fi
+else
+    printf "Error! can't set the tier,the tier number is limited between 1 to 3.\n\n"
+fi
+
+if [ $good == 0 ] ; then
+        help
+	exit 1
+fi
+

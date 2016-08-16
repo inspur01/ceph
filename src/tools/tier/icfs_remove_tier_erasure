@@ -1,0 +1,112 @@
+#/bin/bash
+function warning()
+{
+    printf "\n"
+    echo "WARNING:"
+    echo "  This will PERMANENTLY DESTROY an entire pool of objects with no way back."
+    echo "  To confirm, pass the pool to remove twice, followed by"
+    echo "  -c yes_i_really_really_mean_it"
+}
+
+function usage_help()
+{
+    printf "\n"
+    echo "Usage: icfs_remove_tier_erasure -p <ecpoolname> -t <ecpoolname> -c yes_i_really_really_mean_it"
+    echo "  -p <ecpoolname>                  remove pool <ecpoolname>"
+    echo "  -t <ecpoolname>                  remove pool <ecpoolname> twice"
+    echo "  -c yes_i_really_really_mean_it   To confirm, pass the pool to remove twice, followed"
+    echo "Help options:"
+    echo "  -h|? :Show this help message"
+}
+
+function help()
+{
+    warning
+    printf "\n"
+    echo "REMINDING:"
+    echo "  Before remove pool, confirm no operations on the pool or corresponded directory "
+    echo "                      and clean up the correspondences please."
+    usage_help
+}
+
+function reminding()
+{
+    echo "REMINDING again:"
+    echo "  Confirm no more operations on the pool [$1] or corresponded directory and clean up the correspondences."
+}
+
+function ecpool_exist()
+{
+    existec=`icfs osd dump|grep tiers|awk 'BEGIN{FS=" "} {print $3}' |grep $basepoolname`
+    if [ "$existec" == "" ] ; then
+        printf "The pool [$basepoolname] is not an erasure pool!\n"
+        exit 1
+    fi
+}
+
+good=0
+while getopts p:t:c:h option
+    do
+        case "$option" in
+        p)
+            type1="cachepoolname"
+            cachepoolname=$OPTARG
+            basepoolname=base${cachepoolname}
+            ecpool_exist
+            ;;
+        t)
+            type2="twiceecpoolname"
+            twiceecpoolname=$OPTARG
+            ;;
+        c)
+            type3="confirmparam"
+            confirmparam=$OPTARG
+            ;;
+        h|?)
+            help
+            exit 1
+            ;;
+        esac
+    done
+
+function cachepoolexist_and_remove()
+{
+    existcache=`icfs osd dump|grep cache_mode|awk 'BEGIN{FS=" "} {print $3}' |grep \'$cachepoolname\'`
+    if [ "'$cachepoolname'" == "$existcache" ] ; then
+        icfs osd tier remove $basepoolname $cachepoolname  >/dev/null 2>&1
+        icfs mds remove_data_pool $cachepoolname  >/dev/null 2>&1
+        rados rmpool $cachepoolname $cachepoolname --yes-i-really-really-mean-it 
+        reminding $cachepoolname
+    #else
+        #echo "can not find the pool [$cachepoolname]"
+        #exit 1
+    fi
+    #echo "cachepoolname = $cachepoolname"
+}
+
+if [ "$type1" == "cachepoolname" ] ; then
+    good=1
+    if [ "$type2" == "twiceecpoolname" ] && [ "$cachepoolname" == "$twiceecpoolname" ] ; then
+        if [ "$type3" == "confirmparam" ] && [ "$confirmparam" == "yes_i_really_really_mean_it" ] ; then
+            icfs osd tier remove-overlay $basepoolname  >/dev/null 2>&1
+            cachepoolexist_and_remove
+            icfs mds remove_data_pool $basepoolname  >/dev/null 2>&1
+            rados rmpool $basepoolname $basepoolname --yes-i-really-really-mean-it  >/dev/null 2>&1
+        else
+            usage_help
+            exit 1
+        fi
+    elif [ "" == "$twiceecpoolname" ] ; then
+        usage_help
+    else
+        echo "WARNING:"
+        echo "  This will PERMANENTLY DESTROY an entire pool of objects with no way back."
+        echo "  To confirm, pass the pool to remove twice[$basepoolname != $twiceecpoolname]"
+        exit 1
+    fi
+fi
+
+if [ $good == 0 ] ; then
+    help
+    exit 1
+fi
