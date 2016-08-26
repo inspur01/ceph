@@ -27,7 +27,7 @@ rm -rf $TESTDIR/hadoop_input
 
 # Load input files into local filesystem
 mkdir -p $TESTDIR/hadoop_input
-wget http://ceph.com/qa/hadoop_input_files.tar -O $TESTDIR/hadoop_input/files.tar
+wget http://teuthology.inspur.com/ceph/other/hadoop_input_files.tar -O $TESTDIR/hadoop_input/files.tar
 cd $TESTDIR/hadoop_input
 tar -xf $TESTDIR/hadoop_input/files.tar
 
