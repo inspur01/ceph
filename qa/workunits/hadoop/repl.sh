@@ -16,7 +16,7 @@ for repl in 2 3 7 8 9; do
   ceph osd pool set $name size $repl
 
   id=`ceph osd dump | sed -n "s/^pool \([0-9]*\) '$name'.*/\1/p"`
-  ceph mds add_data_pool $id
+  ceph mds add_data_pool $name
 done
 
 # create a file in each of the pools
